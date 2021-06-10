@@ -1,0 +1,1047 @@
+---
+title: "Time Series Analysis and Streaming Data Management "
+author: "Giacomo De Gobbi-860913"
+date: "05/20/2021"
+output: html_document
+---
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(results ="hide")
+```
+
+# Introduzione
+## Preprocessing
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(forecast)
+library(tidyr)
+library(dplyr)
+library(xts)
+library(readr)
+library(lubridate)
+library(Metrics)
+library(gridExtra)
+library(KFAS)
+library(ggpubr)
+library(ggfortify)
+library(scales)
+library(pander)
+library(urca)
+library(keras)
+set.seed(12345)
+```
+
+```{r}
+dt <- read.csv2(file="/Users/Giacomo/Desktop/DATA-SCIENCE/Time Series/TrainingSet.csv")
+```
+
+```{r}
+ggAcfPacf <- function(x, lag.max = 40) {
+    ACF <- ggAcf(x, lag.max)
+    PACF <- ggPacf(x, lag.max)
+    grid.arrange(ACF, PACF, ncol=2)
+}
+
+prevs_plot <- function(y_real, y_pred) {
+    y_real <- as.numeric(ts(y_real))
+    y_pred <- as.numeric(y_pred)
+    indice <- 1:length(y_real)
+    df <- data.frame(y_pred, y_real, indice)
+    colnames(df) <- c("predicted", "real", "index")
+    df_2 <- df %>% select(index, predicted, real) %>%
+              gather(key = "series", value = "value", -index)
+    ggplot(df_2, aes(x = index, y = value, col = series)) + geom_line()
+}
+
+
+plot_future <- function(y_true, y_pred) {
+  y_true <- as.vector(y_true)
+  y_pred <- as.vector(y_pred)
+  
+  label1 <- rep("serie storica", length(y_true))
+  label2 <- rep("pevisione", length(y_pred))
+  
+  junk_1 <- cbind(y_true, label1)
+  junk_2 <- cbind(y_pred, label2)
+  df <- rbind(junk_1, junk_2)
+  colnames(df) <- c("valore", "serie")
+  df <- as.data.frame(df)
+  df$valore <-  exp(as.numeric(as.character(df$valore)))
+
+  plot <- ggplot(df, aes(x = 1:nrow(df), y = valore, color = serie)) + geom_line() + xlab("data")
+  return(plot)
+}
+```
+## Missing values
+### 31 Maggio 2020
+```{r}
+value1 <- dt  %>% filter(DATA == "2020-05-30")
+value2 <- dt  %>% filter(DATA == "2020-06-01")
+
+valori <- (value1$VALORE + value2$VALORE) / 2
+
+day <- rep("2020-05-31", 24)
+hour <- seq(1, 24, by = 1)
+dati_31 <- as.data.frame(cbind(day, hour, valori))
+
+dati_31$day <- as.Date(dati_31$day)
+dati_31$hour <- as.integer(dati_31$hour)
+dati_31$valori <- valori
+colnames(dati_31) <- c("DATA", "Ora", "VALORE")
+
+dt$DATA <- as.Date(dt$DATA)
+
+new <- rbind(dt, dati_31)
+
+new <- new[order(new$DATA, new$Ora),]
+```
+### Ora legale
+```{r}
+count_by_day <- dt %>% group_by(DATA) %>% dplyr::summarise(value_counts = n())
+pander(count_by_day %>% filter(value_counts != 24), caption = "Giorni con meno di 24 ore")
+```
+
+```{r}
+value1 <- dt  %>% filter(DATA == "2019-03-31" & Ora == 2)
+value2 <- dt  %>% filter(DATA == "2020-03-29" & Ora == 2)
+
+DATA <- c("2019-03-31", "2020-03-29")
+Ora <- c(3, 3)
+VALORE <- c(value1$VALORE, value2$VALORE)
+
+dt_ora_leg = data.frame(DATA, Ora, 
+                        VALORE)
+
+dt_ora_leg$DATA <- as.Date(dt_ora_leg$DATA)
+dt_ora_leg$Ora <- as.integer(dt_ora_leg$Ora)
+dt_ora_leg$VALORE <- as.numeric(dt_ora_leg$VALORE)
+
+new_data <- rbind(new, dt_ora_leg)
+
+new_data <- new_data[order(new_data$DATA, new_data$Ora),]
+```
+## Esplorazione della serie storica
+```{r}
+mean_day <- tapply(new_data$VALORE, new_data$DATA, FUN=mean)
+std_day <- tapply(new_data$VALORE, new_data$DATA, FUN=sd)
+corr <- cor(mean_day, std_day)
+tmp_df <- data.frame(mean_day, std_day)
+
+ggplot(tmp_df, aes(x = mean_day, y = std_day)) + geom_point() + 
+             geom_smooth(method=lm, se=FALSE, linetype="dashed",
+             color="darkred") + stat_cor(method = "pearson",
+              label.x = 3e+06, label.y = 1750000)
+```
+
+```{r}
+y <- xts(new_data$VALORE, new_data$DATA, frequency = 24)
+y <- log(y)
+autoplot(y) + ggtitle("serie storica") + xlab("data") + ylab("log(valore)")
+```
+## Dataset Split
+```{r}
+n <- length(y)
+y_train <- y[1:14040]
+y_val <- y[14041:length(y)]
+```
+
+```{r}
+train <- data.frame(cbind(1:length(y_train), as.numeric(y_train), rep("training set", length(y_train))))
+colnames(train) <- c("indice", "valore", "serie")
+
+validation <- data.frame(cbind(14041:length(y), as.numeric(y_val), 
+                               rep("validation set", length(y_val))))
+colnames(validation) <- c("indice", "valore", "serie")
+
+df_plot <- as.data.frame(rbind(train, validation))
+
+df_plot$indice <- as.integer(as.character(df_plot$indice))
+df_plot$valore <- as.numeric(as.character(df_plot$valore))
+
+ggplot(df_plot, aes(x = indice, y = valore, col = serie)) + geom_line() + ylab("log(valore)")
+```
+# Arima
+### Controllo della stazionarietà
+```{r}
+ggAcfPacf(as.vector(y_train), 92)
+```
+
+```{r}
+dy <- diff(y_train, 24)
+
+autoplot(dy) + ggtitle("serie storica differenziata")
+```
+
+```{r}
+summary(ur.df(dy[!is.na(dy)], "drift", 10, "AIC")) 
+```
+## Modello 1
+```{r}
+mod1_arima <- Arima(as.vector(y_train), order = c(0, 0, 0), 
+                    seasonal = list(order = c(0, 1, 0), 
+                    period = 24),
+                    include.constant = TRUE)
+
+ggAcfPacf(mod1_arima$residuals, 96)
+```
+
+```{r}
+mod2_arima <- Arima(as.vector(y_train), order = c(3, 0, 0), 
+                    seasonal = list(order = c(0, 1, 2), period = 24),
+              include.constant = TRUE)
+```
+
+```{r}
+prevs1_arima <- forecast(mod2_arima, h = length(y_val))
+y_pred1_arima <- prevs1_arima$mean
+
+plot1_arima <- prevs_plot(exp(as.vector(y_val)), exp(as.vector(y_pred1_arima)))
+
+plot2 <- grid.arrange(ggAcfPacf(mod2_arima$residuals, 400), plot1_arima, ncol = 1, nrow = 2)
+```
+## Modello 2 (sinusoidi)
+```{r}
+tempo <- 1:nrow(y_train)
+
+vj <- 1:10
+freq <- outer(tempo , vj) * 2 * pi/(24 * 365.25)
+
+X_annua <- cbind(cos(freq), sin(freq))
+colnames(X_annua) <- cbind(paste0("cos", vj), paste0("sin", vj))
+```
+
+```{r}
+mod3_arima <- Arima(as.vector(y_train), order = c(3, 0, 0), 
+                    seasonal = list(order = c(0, 1, 2), period = 24),
+                    xreg = X_annua, include.constant = TRUE)
+```
+
+```{r}
+tempo <- 1:nrow(y_val)
+
+vj <- 1:10
+freq_val <- outer(tempo , vj) * 2 * pi/(24 * 365.25)
+
+X_annua_val <- cbind(cos(freq_val), sin(freq_val))
+colnames(X_annua_val) <- cbind(paste0("cos", vj), paste0("sin", vj))
+```
+
+```{r}
+prevs2_arima <- forecast(mod3_arima, h = length(y_val), x = X_annua_val)
+y_pred2_arima <- prevs2_arima$mean
+
+plot2_arima <- prevs_plot(as.vector(y_val), as.vector(y_pred2_arima))
+
+grid.arrange(ggAcfPacf(mod3_arima$residuals, 400), plot2_arima, ncol = 1, nrow = 2)
+```
+## Modello 3 (sinusoidi + dummies)
+```{r}
+## funzione che estrae il giorno
+weekends <- function(x) {
+    day <- weekdays(as.Date(x))
+    if(day == "sabato" || day == "domenica") {
+      return(1)
+    }
+    else {
+      return(0)
+    }
+}
+
+natale <- function(x) {
+  if(x == "2018-12-25" || x == "2019-12-25" || x == "2020-12-25") {
+    return(1)
+  }
+  else {
+    return(0)
+  }
+}
+
+st.stefano <- function(x) {
+    if(x == "2018-12-26" || x == "2019-12-26" || x == "2020-12-26") {
+    return(1)
+  }
+  else {
+    return(0)
+  }
+}
+
+ferragosto <- function(x) {
+  if(x == "2018-08-15" || x == "2019-08-15" || x == "2020-08-15") {
+    return(1)
+  }
+  else {
+    return(0)
+  }
+}
+
+primo.geannio <- function(x) {
+    if(x == "2018-01-01" || x == "2019-01-01" || x == "2020-01-01") {
+    return(1)
+  }
+  else {
+    return(0)
+  }
+}
+
+pasqua <- function(x) {
+      if(x == "2018-04-01" || x == "2019-04-21" || x == "2020-04-12") {
+    return(1)
+  }
+  else {
+    return(0)
+  }
+}
+
+lunedi.angelo <- function(x) {
+      if(x == "2018-04-02" || x == "2019-04-22" || x == "2020-04-13") {
+    return(1)
+  }
+  else {
+    return(0)
+  }
+}
+```
+
+```{r}
+dummy_weekend <- sapply(new_data$DATA, weekends)
+dummy_natale <- sapply(new_data$DATA, natale)
+dummy_st.stefano <- sapply(new_data$DATA, st.stefano)
+dummy_ferragosto <- sapply(new_data$DATA, ferragosto)
+dummy_1gennaio <- sapply(new_data$DATA, primo.geannio)
+dummy_pasqua <- sapply(new_data$DATA, pasqua)
+dummy_lunedi.angelo <- sapply(new_data$DATA, lunedi.angelo)
+```
+
+```{r}
+dummies <- as.matrix(cbind(dummy_weekend, dummy_natale, 
+                           dummy_st.stefano, dummy_ferragosto, 
+                           dummy_1gennaio, dummy_pasqua, dummy_lunedi.angelo))
+colnames(dummies) <- c("weekend", "natale", "st.stefano", "ferragosto", "1gennaio", 
+                       "pasqua", "lunedi.angelo")
+```
+
+```{r}
+regressori_esogeni <- as.matrix(cbind(X_annua, dummies[1:length(y_train), ]))
+```
+
+```{r}
+mod4_arima <- Arima(as.vector(y_train), order = c(3, 0, 0), 
+                    seasonal = list(order = c(0, 1, 2), period = 24),
+                    xreg = regressori_esogeni, include.constant = TRUE)
+
+```
+
+```{r}
+regressori_esogeni_val <- as.matrix(cbind(X_annua_val, dummies[14041:length(y), ]))
+
+prevs3_arima <- forecast(mod4_arima, h = length(y_val), x = regressori_esogeni_val)
+y_pred3_arima <- prevs3_arima$mean
+
+plot3_arima <- prevs_plot(as.vector(exp(y_val)), exp(as.vector(y_pred3_arima)))
+
+grid.arrange(ggAcfPacf(mod4_arima$residuals, 400), plot3_arima, ncol = 1, nrow = 2)
+```
+
+```{r}
+mae_arima_3 <- mae(exp(as.vector(y_val)), exp(as.vector(y_pred3_arima)))
+mae_arima_2 <- mae(exp(as.vector(y_val)), exp(as.vector(y_pred2_arima)))
+mae_arima_1 <- mae(exp(as.vector(y_val)), exp(as.vector(y_pred1_arima)))
+
+perf_arimas <- data.frame(
+                         "modello" = c("arima 1", "arima 2 (sinusoidi)", 
+                                       "arima 3 (sinusoidi + festività)"),
+                         "MAE" = c(mae_arima_1, mae_arima_2, mae_arima_3))
+
+pander(perf_arimas)
+```
+# UCM
+
+## Modello 1 (Random Walk)
+
+#Random walk (dummies + armoniche)
+
+```{r}
+ucm_mod1 <- SSModel(as.vector(y_train) ~ SSMtrend(1, NA) +
+                  SSMseasonal(24, NA, sea.type = "dummy") +
+                   SSMseasonal(8760, NA, sea.type = "trig", harmonics = 1:10),
+                H = NA)
+```
+
+```{r}
+vary <- var(as.vector(y_train))
+ucm_mod1$P1inf <- ucm_mod1$P1inf * 0
+ucm_mod1$a1[1] <- mean(as.vector(y_train))
+diag(ucm_mod1$P1) <- vary
+
+
+#valori inziali delle varianze
+init1 <- as.numeric(4)
+
+init1[1] <- log(vary/1e+12)  # Level
+init1[2] <- log(vary/1e+13)   # Seasonal dummy
+init1[3] <- log(vary/1e+13)    # Seasonal trig
+init1[4] <- log(vary/1e+11)   # Obs error
+```
+
+```{r}
+updt1 <- function(pars, model) {
+  model$Q[1,1,1] <- exp(pars[1])
+  model$Q[2,2,1] <- exp(pars[2])
+  diag(model$Q[3:(2 + 2*10), 3:(2 + 2*10), 1]) <- exp(pars[3])
+  model$H[1, 1, 1] <- exp(pars[4])
+  model
+}
+```
+
+```{r}
+ucm_fit_1 <-  fitSSM(ucm_mod1, init1, updt1)
+ucm_fit_1$optim.out$convergence
+```
+
+```{r}
+data <- c(rep(NA, length(y_val)))
+temp_mod <- SSModel(data ~ SSMtrend(1, ucm_fit_1$model$Q[1,1,1]) +
+                      SSMseasonal(24, ucm_fit_1$model$Q[2,2,1], "dummy") +
+                    SSMseasonal(24*365, ucm_fit_1$model$Q[3, 3, 1], "trig",
+                              harmonics = 1:10),
+                    H = ucm_fit_1$model$H)
+
+ucm_pred_1 <- predict(ucm_fit_1$model, newdata=temp_mod)[1:length(y_val)]
+
+ucm_plot1 <- prevs_plot(exp(as.numeric(y_val)), exp(ucm_pred_1)) + ggtitle("Random Walk dummies + armoniche")
+
+mae_ucm_mod1 <- mae(as.vector(exp(y_val)), as.vector(exp(ucm_pred_1)))
+```
+## Random Walk (solo armoniche)
+```{r}
+ucm_mod2 <- SSModel(as.vector(y_train) ~ SSMtrend(1, NA) +
+                  SSMseasonal(24, NA, sea.type = "trig", harmonics = 1:4) +
+                   SSMseasonal(8760, NA, sea.type = "trig", harmonics = 1:10),
+                H = NA)
+```
+
+```{r}
+vary <- var(as.vector(y_train))
+ucm_mod2$P1inf <- ucm_mod2$P1inf * 0
+ucm_mod2$a1[1] <- mean(as.vector(y_train))
+diag(ucm_mod2$P1) <- vary
+
+
+#valori inziali delle varianze
+init2 <- as.numeric(4)
+
+init2[1] <- log(vary/1e+12)  # Level
+init2[2] <- log(vary/1e+13)   # Seasonal trig
+init2[3] <- log(vary/1e+13)    # Seasonal trig
+init2[4] <- log(vary/1e+11)   # Obs error
+```
+
+```{r}
+updt2 <- function(pars, model) {
+  model$Q[1,1,1] <- exp(pars[1])
+  diag(model$Q[2:(1 + 2*4), 2:(1 + 2*4), 1]) <- exp(pars[2])
+  diag(model$Q[10:(9 + 2*10), 10:(9 + 2*10), 1]) <- exp(pars[3])
+  model$H[1, 1, 1] <- exp(pars[4])
+  model
+}
+```
+
+```{r}
+ucm_fit_2 <-  fitSSM(ucm_mod2, init2, updt2)
+ucm_fit_2$optim.out$convergence
+```
+
+```{r}
+data <- c(rep(NA, length(y_val)))
+temp_mod2 <- SSModel(data ~ SSMtrend(1, ucm_fit_2$model$Q[1,1,1]) +
+                      SSMseasonal(24, ucm_fit_2$model$Q[2,2,1], "trig", harmonics = 1:4) +
+                    SSMseasonal(24*365, ucm_fit_2$model$Q[10, 10, 1], "trig",
+                              harmonics = 1:10),
+                    H = ucm_fit_2$model$H)
+
+ucm_pred_2 <- predict(ucm_fit_2$model, newdata=temp_mod2)[1:length(y_val)]
+
+ucm_plot_2 <- prevs_plot(exp(as.numeric(y_val)), exp(ucm_pred_2)) + ggtitle("Random Walk solo armoniche")
+
+mae_ucm_mod2 <- mae(as.vector(exp(y_val)), as.vector(exp(ucm_pred_2)))
+```
+## Modello 2 (Integrated Random Walk)
+
+### Integrated random walk (dummies + armoniche)
+```{r}
+ucm_mod3<- SSModel(as.vector(y_train) ~ SSMtrend(2, list(0, NA)) +
+                  SSMseasonal(24, NA, sea.type = "dummy") +
+                   SSMseasonal(8760, NA, sea.type = "trig", harmonics = 1:10),
+                H = NA)
+```
+
+```{r}
+vary <- var(as.vector(y_train))
+ucm_mod3$P1inf <- ucm_mod3$P1inf * 0
+ucm_mod3$a1[1] <- mean(as.vector(y_train))
+diag(ucm_mod3$P1) <- vary
+
+
+#valori inziali delle varianze
+init3 <- as.numeric(5)
+
+init3[1] <- 0                 #slope
+init3[2] <- log(vary/1e+12)  # Level
+init3[3] <- log(vary/1e+13)   # Seasonal dummy
+init3[4] <- log(vary/1e+13)    # Seasonal trig
+init3[5] <- log(vary/1e+12)   # Obs error
+```
+
+```{r}
+updt3 <- function(pars, model) {
+  model$Q[1,1,1] <- exp(pars[1])
+  model$Q[2,2,1] <- exp(pars[2])
+  model$Q[3,3,1] <- exp(pars[3])
+  diag(model$Q[4:(3 + 2*10), 4:(3 + 2*10), 1]) <- exp(pars[4])
+  model$H[1, 1, 1] <- exp(pars[5])
+  model
+}
+```
+
+```{r}
+ucm_fit_3 <-  fitSSM(ucm_mod3, init3, updt3)
+ucm_fit_3$optim.out$convergence
+```
+
+```{r}
+data <- c(rep(NA, length(y_val)))
+temp_mod3 <- SSModel(data ~ SSMtrend(2, list(ucm_fit_3$model$Q[1,1,1], ucm_fit_3$model$Q[2,2,1])) +
+                      SSMseasonal(24, ucm_fit_3$model$Q[3,3,1], "dummy") +
+                    SSMseasonal(24*365.25, ucm_fit_3$model$Q[4, 4, 1], "trig",
+                              harmonics = 1:10),
+                    H = ucm_fit_3$model$H)
+
+ucm_pred_3 <- predict(ucm_fit_3$model, newdata=temp_mod3)[1:length(y_val)]
+
+ucm_plot_3 <- prevs_plot(exp(as.numeric(y_val)), exp(ucm_pred_3)) + ggtitle("Integrated Random Walk dummies + sinusoidi")
+
+mae_ucm_mod3 <- mae(exp(as.vector(y_val)), exp(as.vector(ucm_pred_3)))
+```
+### Integrated Random Walk (solo armoniche)
+```{r}
+ucm_mod4 <- SSModel(as.vector(y_train) ~ SSMtrend(2, list(0, NA)) +
+                  SSMseasonal(24, NA, sea.type = "trig", harmonics = 1:4) +
+                   SSMseasonal(8760, NA, sea.type = "trig", harmonics = 1:10),
+                H = NA)
+```
+
+```{r}
+vary <- var(as.vector(y_train))
+ucm_mod4$P1inf <- ucm_mod4$P1inf * 0
+ucm_mod4$a1[1] <- mean(as.vector(y_train))
+diag(ucm_mod4$P1) <- vary
+
+
+#valori inziali delle varianze
+init4 <- as.numeric(5)
+
+init4[1] <- 0                #slope
+init4[2] <- log(vary/1e+12)  # Level
+init4[3] <- log(vary/1e+13)   # Seasonal trig
+init4[4] <- log(vary/1e+13)    # Seasonal trig
+init4[5] <- log(vary/1e+12)   # Obs error
+```
+
+```{r}
+updt4 <- function(pars, model) {
+  model$Q[1,1,1] <- exp(pars[1])
+  model$Q[2,2,1] <- exp(pars[2])
+  diag(model$Q[3:(2 + 2*4), 3:(2 + 2*4), 1]) <- exp(pars[3])
+  diag(model$Q[11:(10 + 2*10), 11:(10 + 2*10), 1]) <- exp(pars[4])
+  model$H[1, 1, 1] <- exp(pars[5])
+  model
+}
+```
+
+```{r}
+ucm_fit_4 <-  fitSSM(ucm_mod4, init4, updt4)
+ucm_fit_4$optim.out$convergence
+```
+
+```{r}
+data <- c(rep(NA, length(y_val)))
+temp_mod4 <- SSModel(data ~ SSMtrend(2, list(ucm_fit_4$model$Q[1,1,1], ucm_fit_4$model$Q[2,2,1])) +
+                      SSMseasonal(24, ucm_fit_4$model$Q[3,3,1], "trig", harmonics = 1:4) +
+                    SSMseasonal(24*365, ucm_fit_4$model$Q[11, 11, 1], "trig",
+                              harmonics = 1:10),
+                    H = ucm_fit_4$model$H)
+
+ucm_pred_4 <- predict(ucm_fit_4$model, newdata=temp_mod4)[1:length(y_val)]
+
+ucm_plot_4 <- prevs_plot(exp(as.numeric(y_val)), exp(ucm_pred_4)) + ggtitle("Integrated Random Walk solo armoniche")
+
+mae_ucm_mod4 <- mae(exp(as.vector(y_val)), exp(as.vector(ucm_pred_4)))
+```
+## Modello 3 (Local Linear Trend)
+
+### Local Linear Trend (dummy + armoniche)
+```{r}
+ucm_mod5 <- SSModel(as.vector(y_train) ~ SSMtrend(2, list(NA, NA)) +
+                  SSMseasonal(24, NA, sea.type = "dummy") +
+                   SSMseasonal(8760, NA, sea.type = "trig", harmonics = 1:10),
+                H = NA)
+```
+
+```{r}
+vary <- var(as.vector(y_train))
+ucm_mod5$P1inf <- ucm_mod5$P1inf * 0
+ucm_mod5$a1[1] <- mean(as.vector(y_train))
+diag(ucm_mod5$P1) <- vary
+
+
+#valori inziali delle varianze
+init5 <- as.numeric(5)
+
+init5[1] <- log(vary/10)    #slope
+init5[2] <- log(vary/1e+12)  # Level
+init5[3] <- log(vary/1e+13)   # Seasonal dummy
+init5[4] <- log(vary/1e+13)    # Seasonal trig
+init5[5] <- log(vary/1e+12)   # Obs error
+```
+
+```{r}
+updt5 <- function(pars, model) {
+  model$Q[1,1,1] <- exp(pars[1])
+  model$Q[2,2,1] <- exp(pars[2])
+  model$Q[3,3,1] <- exp(pars[3])
+  diag(model$Q[4:(3 + 2*10), 4:(3 + 2*10), 1]) <- exp(pars[4])
+  model$H[1, 1, 1] <- exp(pars[5])
+  model
+}
+```
+
+```{r}
+ucm_fit_5 <-  fitSSM(ucm_mod5, init5, updt5)
+ucm_fit_5$optim.out$convergence
+```
+
+```{r}
+data <- c(rep(NA, length(y_val)))
+temp_mod5 <- SSModel(data ~ SSMtrend(2, list(ucm_fit_5$model$Q[1,1,1], ucm_fit_5$model$Q[2,2,1])) +
+                      SSMseasonal(24, ucm_fit_5$model$Q[3,3,1], "dummy") +
+                    SSMseasonal(24*365, ucm_fit_5$model$Q[4, 4, 1], "trig",
+                              harmonics = 1:10),
+                    H = ucm_fit_5$model$H)
+
+ucm_pred_5 <- predict(ucm_fit_5$model, newdata=temp_mod5)[1:length(y_val)]
+
+ucm_plot_5 <- prevs_plot(exp(as.numeric(y_val)), exp(ucm_pred_5)) + ggtitle("Local Linear Trend dummies + armoniche")
+
+mae_ucm_mod5 <- mae(exp(as.vector(y_val)), exp(as.vector(ucm_pred_5)))
+```
+### Local Linear Trend (solo armoniche)
+```{r}
+ucm_mod6 <- SSModel(as.vector(y_train) ~ SSMtrend(2, list(NA, NA)) +
+                  SSMseasonal(24, NA, sea.type = "trig", harmonics = 1:4) +
+                   SSMseasonal(8760, NA, sea.type = "trig", harmonics = 1:10),
+                H = NA)
+```
+
+```{r}
+vary <- var(as.vector(y_train))
+ucm_mod6$P1inf <- ucm_mod6$P1inf * 0
+ucm_mod6$a1[1] <- mean(as.vector(y_train))
+diag(ucm_mod6$P1) <- vary
+
+
+#valori inziali delle varianze
+init6 <- as.numeric(5)
+
+init6[1] <- log(vary/10)    #slope
+init6[2] <- log(vary/1e+12)  # Level
+init6[3] <- log(vary/1e+13)   # Seasonal trig
+init6[4] <- log(vary/1e+13)    # Seasonal trig
+init6[5] <- log(vary/1e+12)   # Obs error
+```
+
+```{r}
+updt6 <- function(pars, model) {
+  model$Q[1,1,1] <- exp(pars[1])
+  model$Q[2,2,1] <- exp(pars[2])
+  diag(model$Q[3:(2 + 2*4), 3:(2 + 2*4), 1]) <- exp(pars[3])
+  diag(model$Q[11:(10 + 2*10), 11:(10 + 2*10), 1]) <- exp(pars[4])
+  model$H[1, 1, 1] <- exp(pars[5])
+  model
+}
+```
+
+```{r}
+ucm_fit_6 <-  fitSSM(ucm_mod6, init6, updt6)
+ucm_fit_6$optim.out$convergence
+```
+
+```{r}
+data <- c(rep(NA, length(y_val)))
+temp_mod6 <- SSModel(data ~ SSMtrend(2, list(ucm_fit_6$model$Q[1,1,1], ucm_fit_6$model$Q[2,2,1])) +
+                      SSMseasonal(24, ucm_fit_6$model$Q[3,3,1], "trig", harmonics = 1:4) +
+                    SSMseasonal(24*365, ucm_fit_6$model$Q[11, 11, 1], "trig",
+                              harmonics = 1:10),
+                    H = ucm_fit_6$model$H)
+
+ucm_pred_6 <- predict(ucm_fit_6$model, newdata=temp_mod6)[1:length(y_val)]
+
+ucm_plot_6 <- prevs_plot(exp(as.numeric(y_val)), exp(ucm_pred_6)) + ggtitle("Local Linear Trend solo armoniche")
+
+mae_ucm_mod6 <- mae(exp(as.vector(y_val)), exp(as.vector(ucm_pred_6)))
+```
+## Confronto UCM
+```{r}
+
+
+perf_ucms <- data.frame(
+                         "Modello" = c("Random Walk","Integrated Random Walk","Local Linear Trend"),
+                         "Armoniche" = c(mae_ucm_mod2, mae_ucm_mod4, mae_ucm_mod6),
+                         "Dummy + Armoniche"=c(mae_ucm_mod1,mae_ucm_mod3,mae_ucm_mod5))
+
+pander(perf_ucms)
+```
+
+```{r}
+grid.arrange(ucm_plot1, ucm_plot_2, ucm_plot_3, ucm_plot_4, ucm_plot_5, ucm_plot_6, ncol = 2, nrow = 3)
+```
+# Modelli di Machine Learning
+
+## LSTM
+
+```{r}
+ds <- new_data
+ds$VALORE <- log(ds$VALORE)
+val <- c(mean(ds$VALORE), sd(ds$VALORE))
+ds$VALORE <- (ds$VALORE - val[1])/val[2]
+
+datalags <- 30
+train <- ds[seq(length(y_train) + datalags), ]
+validation <- ds[length(y_train) + datalags + seq(length(y_val) + datalags), ]
+
+x.train <- array(data = lag(ds$VALORE, datalags)[-(1:datalags) ], dim = c(nrow(train) - datalags, datalags, 1))
+y.train <- array(data = train$VALORE[-(1:datalags)], dim = c(nrow(train)-datalags, 1))
+
+x.validation <- array(data = lag(ds$VALORE, datalags)[-(1:datalags) ], dim = c(nrow(validation) - datalags, datalags, 1))
+y.validation <- array(data = ds$VALORE[-(1:datalags)], dim = c(nrow(validation) - datalags, 1))
+
+batch.size = 24
+```
+
+```{r}
+model_lstm1 <- keras_model_sequential()
+
+model_lstm1 %>%
+  
+ layer_lstm(units = 128,
+ input_shape = c(datalags, 1),
+ batch_size = batch.size,
+ return_sequences = TRUE,
+ stateful = TRUE) %>%
+  
+ layer_dropout(rate = 0.2) %>%
+
+ layer_lstm(units = 64,
+ return_sequences = FALSE,
+ stateful = TRUE) %>%
+  
+ layer_dropout(rate = 0.2) %>%
+  
+ layer_dense(1)
+  
+model_lstm1%>%
+ compile(loss = 'mae', optimizer = "adam")
+```
+
+```{r}
+for (i in 1:15) {
+    model_lstm1 %>% fit(x = x.train, 
+                  y = y.train, 
+                  batch_size = batch.size,
+                  epochs = 1, 
+                  verbose = 1, 
+                  shuffle = FALSE)
+    
+    model_lstm1 %>% reset_states()
+    
+}
+```
+
+```{r}
+pred_lstm1 <- model_lstm1 %>% predict(x.validation, batch_size = batch.size) %>% .[,1]
+```
+
+```{r}
+pred_lstm1_rescaled <- pred_lstm1*val[2] + val[1]
+y.validation_rescaled <- as.vector(y.validation)*val[2] + val[1]
+plot_lstm <- prevs_plot(as.vector(exp(y_val)), exp(pred_lstm1_rescaled)) + ggtitle("LSTM") +
+  theme(legend.position = "top")
+
+mae_lstm <- mae(exp(as.vector(y_val)), exp(pred_lstm1_rescaled))
+```
+## GRU
+```{r}
+model_gru1 <- keras_model_sequential()
+
+model_gru1 %>%
+  
+ layer_gru(units = 128,
+ input_shape = c(datalags, 1),
+ batch_size = batch.size,
+ return_sequences = TRUE,
+ stateful = TRUE) %>%
+  
+ layer_dropout(rate = 0.2) %>%
+
+ layer_gru(units = 64,
+ return_sequences = FALSE,
+ stateful = TRUE) %>%
+  
+ layer_dropout(rate = 0.2) %>%
+  
+ layer_dense(1)
+  
+model_gru1%>%
+ compile(loss = 'mae', optimizer = "adam")
+```
+
+```{r}
+for (i in 1:15) {
+    model_gru1 %>% fit(x = x.train, 
+                  y = y.train, 
+                  batch_size = batch.size,
+                  epochs = 1, 
+                  verbose = 1, 
+                  shuffle = FALSE)
+    
+    model_gru1 %>% reset_states()
+    
+}
+```
+
+```{r}
+pred_gru1 <- model_gru1 %>% predict(x.validation, batch_size = batch.size) %>% .[,1]
+```
+
+```{r}
+pred_gru1_rescaled <- pred_gru1*val[2] + val[1]
+y.validation_rescaled <- as.vector(y.validation)*val[2] + val[1]
+plot_gru <- prevs_plot(as.vector(exp(y_val)), exp(pred_gru1_rescaled)) + ggtitle("GRU") +
+  theme(legend.position = "top")
+
+mae_gru <- mae(exp(as.vector(y_val)), exp(pred_gru1_rescaled))
+```
+## KNN
+```{r}
+ts <- log(new_data$VALORE)
+t <- nrow(y_train) #giorno a cui voglio mettermi
+p <- 24*15 #storia per la previsione (iperparametro KNN)
+h <- nrow(y_val) # horizon
+```
+
+```{r}
+knn_ts <- function(ts, t, p, k, h) {
+  count <- 0
+  s <- ts
+  query <- ts[(t-p):t]
+
+  IXS <- numeric(k)
+  while(count < k){
+    d.min <- Inf
+    for(ix in 1:(t-p-h)){
+      subsequence <- s[ix:(ix+p)]
+      d <- as.numeric(dist(rbind(subsequence, query)))
+      if(d < d.min){
+        d.min <- d
+        IXS[count + 1] <- ix
+      }
+    }
+    count <- count + 1
+  # Visto che non vogliamo overlap devo cambiare la sottosequenza dopo averla valutata
+    s[IXS[count]:(IXS[count] + p)] <- Inf
+  }
+
+  futuri <- NULL
+  for(i in 1:length(IXS)){
+  # Aggiungo +1 per andare sul valore successivo all'ultimo
+    w <- (IXS[i]+p+1):(IXS[i]+p+h)
+    futuri <- rbind(futuri, ts[w])
+  }
+
+  pred.m <- apply(futuri, 2, mean)
+  return(pred.m)
+}
+```
+
+```{r}
+maes_knn <- c()
+i <- 1
+for(k in 2:10) {
+  ypred <- knn_ts(ts, t, p, k, h)
+  maes_knn[i] <- mae(exp(as.vector(y_val)), exp(ypred))
+  i <- i + 1
+}
+```
+
+```{r}
+res_knns <- data.frame("n.vicini" = 2:10, 
+                       "mae" = maes_knn)
+```
+
+```{r}
+ggplot(res_knns, aes(x = n.vicini, y = mae)) + geom_line() +
+  geom_point(size = 2, col = "red")
+```
+
+```{r}
+knn_opt <- knn_ts(ts, t, p, 2, h)
+mae_knn_opt <- res_knns[1, 'mae']
+plot_knn <- prevs_plot(as.vector(exp(y_val)), exp(knn_opt)) + ggtitle("KNN")
+```
+## Confronto ML
+```{r}
+perf_ml <- data.frame(Modello = c("LSTM", "GRU", "KNN"), "MAE" = c(mae_lstm, mae_gru, mae_knn_opt))
+pander(perf_ml)
+```
+
+```{r}
+grid.arrange(arrangeGrob(plot_lstm,plot_gru, ncol = 2), plot_knn, nrow = 2)
+```
+# Previsioni
+```{r}
+test <-  data.frame(Data = seq(from = as.Date("2020-09-01"), to = as.Date("2020-10-31"), 
+                                   length.out = 61*24),
+                       Ora = rep(1:24, 61*24))
+test <- test[0:1464,]
+```
+## Miglior Arima
+```{r}
+tempo <- 1:nrow(y)
+
+vj <- 1:10
+freq <- outer(tempo , vj) * 2 * pi/(24 * 365.25)
+
+X_annua <- cbind(cos(freq), sin(freq))
+colnames(X_annua) <- cbind(paste0("cos", vj), paste0("sin", vj))
+```
+
+```{r}
+mod_arima_best <- Arima(as.vector(y), order = c(3, 0, 1), 
+                    seasonal = list(order = c(0, 1, 2), period = 24),
+                    xreg = X_annua, include.constant = TRUE)
+```
+
+```{r}
+tempo <- 1:nrow(test)
+
+vj <- 1:10
+freq_val <- outer(tempo , vj) * 2 * pi/(24 * 365.25)
+
+X_annua_val <- cbind(cos(freq_val), sin(freq_val))
+colnames(X_annua_val) <- cbind(paste0("cos", vj), paste0("sin", vj))
+```
+
+```{r}
+pred_best_arima <- forecast(mod_arima_best, h = nrow(test), x = X_annua_val)
+pred_test_arima <- pred_best_arima$mean
+```
+## Previsioni UCM
+```{r}
+best_mod_ucm <- SSModel(as.vector(y) ~ SSMtrend(1, NA) +
+                  SSMseasonal(24, NA, sea.type = "dummy") +
+                   SSMseasonal(8760, NA, sea.type = "trig", harmonics = 1:10),
+                H = NA)
+```
+
+```{r}
+vary <- var(as.vector(y))
+best_mod_ucm$P1inf <- best_mod_ucm$P1inf * 0
+best_mod_ucm$a1[1] <- mean(as.vector(y))
+diag(best_mod_ucm$P1) <- vary
+
+
+#valori inziali delle varianze
+init <- as.numeric(4)
+
+init[1] <- log(vary/1e+12)  # Level
+init[2] <- log(vary/1e+13)   # Seasonal dummy
+init[3] <- log(vary/1e+13)    # Seasonal trig
+init[4] <- log(vary/1e+11)   # Obs error
+```
+
+```{r}
+updt <- function(pars, model) {
+  model$Q[1,1,1] <- exp(pars[1])
+  model$Q[2,2,1] <- exp(pars[2])
+  diag(model$Q[3:(2 + 2*10), 3:(2 + 2*10), 1]) <- exp(pars[3])
+  model$H[1, 1, 1] <- exp(pars[4])
+  model
+}
+```
+
+```{r}
+best_ucm_fit <-  fitSSM(best_mod_ucm, init, updt)
+best_ucm_fit$optim.out$convergence
+```
+
+```{r}
+data <- c(rep(NA, nrow(test)))
+temp_mod_best <- SSModel(data ~ SSMtrend(1, best_ucm_fit$model$Q[1,1,1]) +
+                      SSMseasonal(24, best_ucm_fit$model$Q[2,2,1], "dummy") +
+                    SSMseasonal(24*365, best_ucm_fit$model$Q[3, 3, 1], "trig",
+                              harmonics = 1:10),
+                    H = best_ucm_fit$model$H)
+
+best_ucm_pred <- predict(best_ucm_fit$model, newdata=temp_mod_best)[1:nrow(test)]
+```
+## ML
+```{r}
+ts <- as.vector(y)
+t <- nrow(y) #giorno a cui voglio mettermi
+p <- 15*24 #storia per la previsione (iperparametro KNN)
+k <- 2 # k (iperparametro KNN)
+h <- 61*24 # horizon --> siamo in multistep (multioutput)
+```
+
+```{r}
+pred_knn_test <- knn_ts(ts, t, p, k, h) #previsioni
+```
+## Valutazione delle previsioni
+```{r}
+plot_test_1 <- plot_future(y, pred_test_arima) + ggtitle("previsioni ARIMA") + theme(legend.position = "top")
+plot_test_2 <- plot_future(y, best_ucm_pred) + ggtitle("previsioni UCM")
+plot_test_3 <- plot_future(y, pred_knn_test) + ggtitle("previsioni KNN") + theme(legend.position = "top")
+
+grid.arrange(arrangeGrob(plot_test_1,plot_test_3, ncol = 2), plot_test_2, nrow = 2)
+```
+
+```{r}
+best_arima <- exp(t(t(pred_test_arima)))
+best_ucm <- exp(t(t(best_ucm_pred)))
+best_ml <- exp(t(t(pred_knn_test)))
+```
+
+```{r}
+final <- cbind(test, best_arima, best_ucm, best_ml)
+colnames(final) <- c("Data", "Ora", "ARIMA", "UCM", "ML")
+```
+
+```{r}
+write.csv2(final, "SDMTSA_860913_1.csv", row.names = F) 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
