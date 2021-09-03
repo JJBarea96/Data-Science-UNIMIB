@@ -1,0 +1,439 @@
+##### PRIMA INFOGRAFICA ######
+# violino #
+
+library(ggplot2)
+library(LabRS)
+library(magrittr)
+library(tidyverse)
+library(varhandle)
+library(ggpubr)
+library(corrplot)
+
+setwd("C:/Users/david/Desktop/DATA VISUALIZATION/Progetto")
+IC_PROP <- function(p) {
+  estremo_sup <- p + 1.96 * sqrt((p * (1 - p)) / 24)
+  estremo_inf <- p - 1.96 * sqrt((p * (1 - p)) / 24)
+  return(list(estremo_sup, estremo_inf))
+}
+
+dati <- read.csv("task prima.csv", sep = ";")
+colnames(dati) <- c("Task", "Tempo", "Successo")
+
+ggplot(dati, aes(x = Task, y = Tempo)) + 
+  geom_violin(trim = FALSE, fill = "darkgray", color="darkred") +
+  geom_jitter(shape=16, position=position_jitter(0.1),aes(color = Successo), 
+              size = 3) + 
+  ylab("secondi") +
+  theme_minimal() + geom_boxplot(width=0.01, outlier.colour = "#00BFC4")
+
+
+# Stacked barplot/correlogramma #
+
+set.seed(1112344789)
+library(ggplot2)
+library(LabRS)
+library(magrittr)
+library(tidyverse)
+library(varhandle)
+library(ggpubr)
+library(corrplot)
+
+setwd("C:/Users/david/Desktop/DATA VISUALIZATION/Progetto")
+IC_PROP <- function(p) {
+  estremo_sup <- p + 1.96 * sqrt((p * (1 - p)) / 24)
+  estremo_inf <- p - 1.96 * sqrt((p * (1 - p)) / 24)
+  return(list(estremo_sup, estremo_inf))
+}
+
+
+risultati <- read.csv2("PRIMA VIZ.csv", header = TRUE,sep = ";")
+risultati
+
+n_utile <- risultati$ï..Utile
+n_intuitiva <- risultati$Intuitiva
+n_chiara <- risultati$Chiara
+n_informativa <- risultati$Informativa
+n_bella <- risultati$Bella
+n_valutazione_complessiva <- risultati$Valore_complessivo
+
+utile <- cbind(n_utile, rep("utile", 24))
+intuitiva <- cbind(n_intuitiva, rep("intuitiva", 24))
+chiara <- cbind(n_chiara, rep("chiara", 24))
+informativa <- cbind(n_informativa, rep("informativa", 24))
+bella <- cbind(n_bella, rep("bella", 24))
+valutazione_complessiva <- cbind(n_valutazione_complessiva, 
+                                 rep("valutazione_complessiva", 24))
+
+dati <- data.frame(rbind(bella, informativa, chiara, intuitiva, utile,
+                         valutazione_complessiva))
+colnames(dati) <- c("Valore", "Variabile")
+
+
+# Funzione per raggruppare i valori
+ragrupp <- function(x) {
+  if (x >= 1 & x <= 3) {
+    return("1-3")
+  }
+  if (x >= 4 & x <= 6) {
+    return("4-6")
+  }
+}
+
+j = 1
+condizione <- c()
+for(i in dati$Valore) {
+  if(i <= 3) {
+    condizione[j] <- "1-3"
+  }
+  else {
+    condizione[j] <- "4-6"
+  }
+  j = j + 1
+}
+
+dati <- cbind(dati, condizione)
+head(dati)
+
+#### Calcolo delle proporzioni
+
+t <- round(table(dati$condizione, dati$Variabile) / 24, 2)
+variabile <- c("Bella", "Bella", "Informativa", "Informativa", 
+               "Chiara", "Chiara", "Intuitiva", "Intuitiva",
+               "Utile", "Utile", "Valutazione_complessiva", 
+               "Valutazione_complessiva")
+
+condizione <- c("1-3", "4-6", "1-3", "4-6", "1-3", "4-6", "1-3", "4-6",
+                "1-3", "4-6", "1-3", "4-6")
+prop <- c(t[1:2], t[3:4], t[5:6], t[7:8], t[9:10], t[11:12])
+
+dati_prop <- data.frame(cbind(variabile, condizione, 
+                              as.numeric(prop)))
+colnames(dati_prop) <- c("variabile", "condizione", "prop")
+
+dati_prop$prop <- sapply(dati_prop$prop, as.numeric)
+#dati_prop$prop <- as.numeric(levels(dati_prop$prop))[dati_prop$prop] #da factor a numeric
+
+### Data frame per l'intervallo di confidenza
+
+upper <- c(0.56, 0.56, 0.44, 0.44, 0.44, 0.44, 0.48, 0.48, 0.65, 0.65, 0.48, 0.48)
+lower <- c(0.19, 0.19, 0.10, 0.10, 0.10, 0.10, 0.13, 0.13, 0.27, 0.27, 0.13, 0.13)
+dati_err <- data.frame(variabile, upper, lower)
+
+
+## Stacked barplot
+
+ggplot(dati_prop, aes(x = variabile, y =prop, fill = condizione)) +
+  geom_bar(position = position_stack(reverse = TRUE), 
+           stat = "identity") + coord_flip() + 
+  geom_errorbar(data = dati_err, aes(ymin = lower, ymax = upper), 
+                width = 0.15) +
+  xlab(label = "voci") + ylab(label = "percentuale di voti") +
+  scale_fill_manual(values = c("blue", "red")) +
+  guides(fill=guide_legend(title = " ")) + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25),
+                     sec.axis = sec_axis(~ 1 - .,)) +
+  geom_hline(yintercept = 0.5, linetype = "dotted", size = 1) +
+  theme(axis.text.x.bottom = element_text(color = "blue", size = 12)) +
+  theme(axis.text.x.top = element_text(color = "red", size = 12)) +
+  theme(axis.text.y = element_text(face = "bold", size = 10))
+
+
+## Correlogramma
+
+dati_b <- data.frame(cbind(n_utile, n_intuitiva, n_chiara,
+                           n_informativa, n_bella, 
+                           n_valutazione_complessiva))
+colnames(dati_b) <- c("Utile", "Intuitiva", "Chiara", 
+                      "Informativa", "Bella", "Valutazione_complessiva")
+corrplot(cor(dati_b), method = "ellipse", type = "lower")
+
+
+
+
+
+
+
+
+
+
+
+
+##### SECONDA INFOGRAFICA #####
+# violino #
+
+dati <- read.csv("task seconda.csv", sep = ";")
+colnames(dati) <- c("Task", "Tempo", "Successo")
+
+ggplot(dati, aes(x = Task, y = Tempo)) + 
+  geom_violin(trim = FALSE, fill = "darkgray", color="darkred") +
+  geom_jitter(shape=16, position=position_jitter(0.1),aes(color = Successo), 
+              size = 3) + 
+  ylab("secondi") +
+  theme_minimal() + geom_boxplot(width=0.01, outlier.colour = "#00BFC4")
+
+# Stacked barplot/correlogramma #
+
+risultati <- read.csv2("SECONDA VIZ.csv", header = TRUE,sep = ";")
+risultati
+
+n_utile <- risultati$ï..Utile
+n_intuitiva <- risultati$Intuitiva
+n_chiara <- risultati$Chiara
+n_informativa <- risultati$Informativa
+n_bella <- risultati$Bella
+n_valutazione_complessiva <- risultati$Valore_complessivo
+
+utile <- cbind(n_utile, rep("utile", 24))
+intuitiva <- cbind(n_intuitiva, rep("intuitiva", 24))
+chiara <- cbind(n_chiara, rep("chiara", 24))
+informativa <- cbind(n_informativa, rep("informativa", 24))
+bella <- cbind(n_bella, rep("bella", 24))
+valutazione_complessiva <- cbind(n_valutazione_complessiva, 
+                                 rep("valutazione_complessiva", 24))
+
+dati <- data.frame(rbind(bella, informativa, chiara, intuitiva, utile,
+                         valutazione_complessiva))
+colnames(dati) <- c("Valore", "Variabile")
+
+
+# Funzione per raggruppare i valori
+ragrupp <- function(x) {
+  if (x >= 1 & x <= 3) {
+    return("1-3")
+  }
+  if (x >= 4 & x <= 6) {
+    return("4-6")
+  }
+}
+
+j = 1
+condizione <- c()
+for(i in dati$Valore) {
+  if(i <= 3) {
+    condizione[j] <- "1-3"
+  }
+  else {
+    condizione[j] <- "4-6"
+  }
+  j = j + 1
+}
+
+dati <- cbind(dati, condizione)
+head(dati)
+
+#### Calcolo delle proporzioni
+
+t <- round(table(dati$condizione, dati$Variabile) / 24, 2)
+variabile <- c("Bella", "Bella", "Informativa", "Informativa", 
+               "Chiara", "Chiara", "Intuitiva", "Intuitiva",
+               "Utile", "Utile", "Valutazione_complessiva", 
+               "Valutazione_complessiva")
+
+condizione <- c("1-3", "4-6", "1-3", "4-6", "1-3", "4-6", "1-3", "4-6",
+                "1-3", "4-6", "1-3", "4-6")
+prop <- c(t[1:2], t[3:4], t[5:6], t[7:8], t[9:10], t[11:12])
+
+dati_prop <- data.frame(cbind(variabile, condizione, 
+                              as.numeric(prop)))
+colnames(dati_prop) <- c("variabile", "condizione", "prop")
+
+dati_prop$prop <- sapply(dati_prop$prop, as.numeric)
+#dati_prop$prop <- as.numeric(levels(dati_prop$prop))[dati_prop$prop] #da factor a numeric
+
+### Data frame per l'intervallo di confidenza
+
+upper <- c(0.56, 0.56, 0.44, 0.44, 0.44, 0.44, 0.48, 0.48, 0.65, 0.65, 0.48, 0.48)
+lower <- c(0.19, 0.19, 0.10, 0.10, 0.10, 0.10, 0.13, 0.13, 0.27, 0.27, 0.13, 0.13)
+dati_err <- data.frame(variabile, upper, lower)
+
+
+## Stacked barplot
+
+ggplot(dati_prop, aes(x = variabile, y =prop, fill = condizione)) +
+  geom_bar(position = position_stack(reverse = TRUE), 
+           stat = "identity") + coord_flip() + 
+  geom_errorbar(data = dati_err, aes(ymin = lower, ymax = upper), 
+                width = 0.15) +
+  xlab(label = "voci") + ylab(label = "percentuale di voti") +
+  scale_fill_manual(values = c("blue", "red")) +
+  guides(fill=guide_legend(title = " ")) + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25),
+                     sec.axis = sec_axis(~ 1 - .,)) +
+  geom_hline(yintercept = 0.5, linetype = "dotted", size = 1) +
+  theme(axis.text.x.bottom = element_text(color = "blue", size = 12)) +
+  theme(axis.text.x.top = element_text(color = "red", size = 12)) +
+  theme(axis.text.y = element_text(face = "bold", size = 10))
+
+
+#### Correlogramma
+
+dati_b <- data.frame(cbind(n_utile, n_intuitiva, n_chiara,
+                           n_informativa, n_bella, 
+                           n_valutazione_complessiva))
+colnames(dati_b) <- c("Utile", "Intuitiva", "Chiara", 
+                      "Informativa", "Bella", "Valutazione_complessiva")
+corrplot(cor(dati_b), method = "ellipse", type = "lower")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### TERZA INFOGRAFICA ####
+
+# violino #
+
+dati <- read.csv("task terza.csv", sep = ";")
+colnames(dati) <- c("Task", "Tempo", "Successo")
+
+ggplot(dati, aes(x = Task, y = Tempo)) + 
+  geom_violin(trim = FALSE, fill = "darkgray", color="darkred") +
+  geom_jitter(shape=16, position=position_jitter(0.1),aes(color = Successo), 
+              size = 3) + 
+  ylab("secondi") +
+  theme_minimal() + geom_boxplot(width=0.01, outlier.colour = "#00BFC4")
+
+# Stacked barplot/correlogramma #
+
+risultati <- read.csv2("TERZA VIZ.csv", header = TRUE,sep = ";")
+risultati
+
+n_utile <- risultati$ï..Utile
+n_intuitiva <- risultati$Intuitiva
+n_chiara <- risultati$Chiara
+n_informativa <- risultati$Informativa
+n_bella <- risultati$Bella
+n_valutazione_complessiva <- risultati$Valore_complessivo
+
+utile <- cbind(n_utile, rep("utile", 24))
+intuitiva <- cbind(n_intuitiva, rep("intuitiva", 24))
+chiara <- cbind(n_chiara, rep("chiara", 24))
+informativa <- cbind(n_informativa, rep("informativa", 24))
+bella <- cbind(n_bella, rep("bella", 24))
+valutazione_complessiva <- cbind(n_valutazione_complessiva, 
+                                 rep("valutazione_complessiva", 24))
+
+dati <- data.frame(rbind(bella, informativa, chiara, intuitiva, utile,
+                         valutazione_complessiva))
+colnames(dati) <- c("Valore", "Variabile")
+
+
+# Funzione per raggruppare i valori
+ragrupp <- function(x) {
+  if (x >= 1 & x <= 3) {
+    return("1-3")
+  }
+  if (x >= 4 & x <= 6) {
+    return("4-6")
+  }
+}
+
+j = 1
+condizione <- c()
+for(i in dati$Valore) {
+  if(i <= 3) {
+    condizione[j] <- "1-3"
+  }
+  else {
+    condizione[j] <- "4-6"
+  }
+  j = j + 1
+}
+
+dati <- cbind(dati, condizione)
+head(dati)
+
+#### Calcolo delle proporzioni
+
+t <- round(table(dati$condizione, dati$Variabile) / 24, 2)
+variabile <- c("Bella", "Bella", "Informativa", "Informativa", 
+               "Chiara", "Chiara", "Intuitiva", "Intuitiva",
+               "Utile", "Utile", "Valutazione_complessiva", 
+               "Valutazione_complessiva")
+
+condizione <- c("1-3", "4-6", "1-3", "4-6", "1-3", "4-6", "1-3", "4-6",
+                "1-3", "4-6", "1-3", "4-6")
+prop <- c(t[1:2], t[3:4], t[5:6], t[7:8], t[9:10], t[11:12])
+
+dati_prop <- data.frame(cbind(variabile, condizione, 
+                              as.numeric(prop)))
+colnames(dati_prop) <- c("variabile", "condizione", "prop")
+
+dati_prop$prop <- sapply(dati_prop$prop, as.numeric)
+#dati_prop$prop <- as.numeric(levels(dati_prop$prop))[dati_prop$prop] #da factor a numeric
+
+### Data frame per l'intervallo di confidenza
+
+upper <- c(0.56, 0.56, 0.44, 0.44, 0.44, 0.44, 0.48, 0.48, 0.65, 0.65, 0.48, 0.48)
+lower <- c(0.19, 0.19, 0.10, 0.10, 0.10, 0.10, 0.13, 0.13, 0.27, 0.27, 0.13, 0.13)
+dati_err <- data.frame(variabile, upper, lower)
+
+
+## Stacked barolot
+
+ggplot(dati_prop, aes(x = variabile, y =prop, fill = condizione)) +
+  geom_bar(position = position_stack(reverse = TRUE), 
+           stat = "identity") + coord_flip() + 
+  geom_errorbar(data = dati_err, aes(ymin = lower, ymax = upper), 
+                width = 0.15) +
+  xlab(label = "voci") + ylab(label = "percentuale di voti") +
+  scale_fill_manual(values = c("blue", "red")) +
+  guides(fill=guide_legend(title = " ")) + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25),
+                     sec.axis = sec_axis(~ 1 - .,)) +
+  geom_hline(yintercept = 0.5, linetype = "dotted", size = 1) +
+  theme(axis.text.x.bottom = element_text(color = "blue", size = 12)) +
+  theme(axis.text.x.top = element_text(color = "red", size = 12)) +
+  theme(axis.text.y = element_text(face = "bold", size = 10))
+
+
+#### Correlogramma
+
+dati_b <- data.frame(cbind(n_utile, n_intuitiva, n_chiara,
+                           n_informativa, n_bella, 
+                           n_valutazione_complessiva))
+colnames(dati_b) <- c("Utile", "Intuitiva", "Chiara", 
+                      "Informativa", "Bella", "Valutazione_complessiva")
+corrplot(cor(dati_b), method = "ellipse", type = "lower")
+
+
+##### SUCCESSO/INSUCCESSO TASK #####
+
+risultati <- read.csv2("Task infografiche.csv")
+
+
+### Data frame per l'intervallo di confidenza
+Infografica <- c(1, 1, 2, 2, 3, 3)
+upper <- c(0.06, 0.06, 0.06, 0.06, 0.06, 0.06)
+lower <- c(0.02, 0.02, 0, 0, 0, 0)
+dati_err <- data.frame(Infografica, upper, lower, risultati$Prop, 
+                       risultati$Successo)
+names(dati_err) <- c("Infografica", "upper", "lower", "Prop", "Successo")
+
+## Stacked barolot
+
+ggplot(risultati, aes(x = Infografica, y = Prop, fill = Successo)) +
+  geom_bar(position = position_stack(reverse = TRUE), 
+           stat = "identity") + coord_flip() + 
+  geom_errorbar(data = dati_err, aes(ymin = lower, ymax = upper), width = 0.15) +
+  xlab(label = "Infografica") + ylab(label = "percentuale successo") +
+  scale_fill_manual(values = c("blue", "red")) +
+  guides(fill=guide_legend(title = " ")) + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25),
+                     sec.axis = sec_axis(~ 1 - .,)) +
+  geom_hline(yintercept = 0.10, linetype = "dotted", size = 1) +
+  theme(axis.text.x.bottom = element_text(color = "blue", size = 12)) +
+  theme(axis.text.x.top = element_text(color = "red", size = 12)) +
+  theme(axis.text.y = element_text(face = "bold", size = 10)) + 
+  labs(title = "Analisi successo/insuccesso del completamento dei tasks")
+
+
+
